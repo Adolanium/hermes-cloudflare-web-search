@@ -1,0 +1,43 @@
+name: cloudflare-web-search
+version: 1.0.0
+description: "Search the web through Cloudflare AI Gateway with Ceramic, Exa, or Linkup."
+author: Adolanium
+license: MIT
+kind: backend
+provides_web_providers:
+  - cloudflare-web-search
+provides_tools: []
+provides_hooks: []
+provides_middleware: []
+requires_env:
+  - name: CLOUDFLARE_WEB_SEARCH_API_TOKEN
+    description: Cloudflare API token with Workers AI Read and AI Gateway Read
+    url: https://developers.cloudflare.com/web-search/how-to-use/
+    secret: true
+python_dependencies:
+  - "httpx>=0.28.1,<1"
+config_schema:
+  api_token:
+    type: secret
+    env: CLOUDFLARE_WEB_SEARCH_API_TOKEN
+    label: Cloudflare API token
+    description: Requires Account Workers AI Read and Account AI Gateway Read permissions.
+  account_id:
+    type: str
+    required: true
+    label: Cloudflare account ID
+    description: Your 32-character Cloudflare account ID.
+  gateway_id:
+    type: str
+    default: default
+    label: AI Gateway ID
+  provider:
+    type: str
+    default: ceramic
+    choices: [ceramic, exa, linkup]
+    label: Search provider
+  byok_alias:
+    type: str
+    default: ""
+    label: BYOK alias
+    description: Optional alias of a provider key already stored in AI Gateway.
