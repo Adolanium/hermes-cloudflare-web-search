@@ -141,6 +141,171 @@ def load_provider(api, monkeypatch):
     return provider
 
 
+@pytest.fixture
+def search_cache():
+    from tools.web_result_cache import search_memo
+
+    search_memo.clear()
+    yield
+    search_memo.clear()
+
+
+def set_cache_mode(home, enabled):
+    config_file = home / "config.yaml"
+    config = json.loads(config_file.read_text(encoding="utf-8"))
+    if enabled:
+        # Omit the setting to exercise Hermes' default, not an explicit opt-in.
+        config["web"].pop("cache_enabled")
+    else:
+        config["web"]["cache_enabled"] = False
+    config_file.write_text(json.dumps(config), encoding="utf-8")
+
+
+def dispatch_search(query):
+    importlib.import_module("tools.web_tools")
+    from tools.registry import registry
+
+    return json.loads(registry.dispatch("web_search", {"query": query, "limit": 2}))
+
+
+@pytest.mark.parametrize(
+    "cache_enabled", [True, False], ids=["default-cache", "cache-disabled"]
+)
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider", "exa"),
+        ("gateway_id", "new-gateway"),
+        ("account_id", "d" * 32),
+        ("byok_alias", "new-key"),
+    ],
+)
+def test_search_cache_respects_saved_route_changes(
+    profiles, api, monkeypatch, search_cache, request, cache_enabled, field, value
+):
+    from hermes_cli.config import save_config
+    from hermes_cli.plugins_settings import save_plugin_settings
+
+    home = profiles["a"]
+    set_cache_mode(home, cache_enabled)
+    api[2]["body"] = {
+        "items": [
+            {
+                "title": "Route response",
+                "url": "https://example.com/route",
+                "description": "before",
+            }
+        ]
+    }
+    with profile_scope(home):
+        load_provider(api, monkeypatch)
+        for _ in range(2):
+            assert dispatch_search("repeat query") == {
+                "success": True,
+                "data": {
+                    "web": [
+                        {
+                            "title": "Route response",
+                            "url": "https://example.com/route",
+                            "description": "before",
+                            "position": 1,
+                        }
+                    ]
+                },
+            }
+        calls_before = len(api[1])
+        assert calls_before == (1 if cache_enabled else 2)
+
+        save_plugin_settings(
+            "cloudflare-web-search",
+            home / "plugins" / "cloudflare-web-search",
+            {field: value},
+        )
+        api[2]["body"]["items"][0]["description"] = "after"
+        changed = dispatch_search("repeat query")
+        calls_after = len(api[1])
+
+        # A new query proves that the real settings writer changed the outgoing route.
+        fresh = dispatch_search("different query")
+        assert fresh["data"]["web"][0]["description"] == "after"
+        settings = {
+            "account_id": "a" * 32,
+            "gateway_id": "gateway-a",
+            "provider": "ceramic",
+            "byok_alias": "",
+        }
+        settings[field] = value
+        payload = {
+            "query": "different query",
+            "provider": settings["provider"],
+            "limit": 10,
+            "options": {"gateway": {"id": settings["gateway_id"]}},
+        }
+        if settings["byok_alias"]:
+            payload["byokAlias"] = settings["byok_alias"]
+        assert api[1][-1] == {
+            "path": f"/client/v4/accounts/{settings['account_id']}/ai/websearch/",
+            "authorization": "Bearer fake-token-a",
+            "json": payload,
+        }
+
+        save_config({"web": {"cache_enabled": False}}, merge_existing=True)
+        assert (
+            dispatch_search("repeat query")["data"]["web"][0]["description"] == "after"
+        )
+
+    # Mark only after setup and controls pass, so unrelated failures stay failures.
+    if cache_enabled:
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="Hermes search cache omits routing settings; PR #132851 F1",
+            )
+        )
+    assert {
+        "description": changed["data"]["web"][0]["description"],
+        "new_requests": calls_after - calls_before,
+    } == {"description": "after", "new_requests": 1}
+
+
+@pytest.mark.parametrize(
+    "cache_enabled", [True, False], ids=["default-cache", "cache-disabled"]
+)
+def test_search_cache_isolates_profiles(
+    profiles, api, monkeypatch, search_cache, request, cache_enabled
+):
+    descriptions = []
+    for home in profiles.values():
+        set_cache_mode(home, cache_enabled)
+    for name in ("a", "b", "a"):
+        with profile_scope(profiles[name]):
+            provider = load_provider(api, monkeypatch)
+            # Direct calls must honor the profile even when the host memo does not.
+            assert (
+                provider.search("direct profile control")["data"]["web"][0][
+                    "description"
+                ]
+                == f"Bearer fake-token-{name}"
+            )
+            descriptions.append(
+                dispatch_search("same profile query")["data"]["web"][0]["description"]
+            )
+    if cache_enabled:
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                raises=AssertionError,
+                reason="Hermes search cache omits the active profile; upstream PR #95036",
+            )
+        )
+    assert descriptions == [
+        "Bearer fake-token-a",
+        "Bearer fake-token-b",
+        "Bearer fake-token-a",
+    ]
+
+
 def test_installed_backend_dispatches_with_each_profiles_settings_and_token(
     profiles, api, monkeypatch
 ):

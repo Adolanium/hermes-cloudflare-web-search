@@ -32,9 +32,12 @@ Use Ceramic, Exa, or Linkup through [Cloudflare Web Search API](https://develope
            byok_alias: ""
    web:
      search_backend: cloudflare-web-search
+     cache_enabled: false
    ```
 
-4. Run `hermes tools` and select **Cloudflare Web Search** under **Web Search & Extract**, or set `web.search_backend` as above. Start a new conversation after installation.
+4. Set `web.cache_enabled: false` in the active profile's `config.yaml`, as shown above. This also applies when you configure the plugin through Desktop. See the [search cache limitation](#search-cache-limitation).
+
+5. Run `hermes tools` and select **Cloudflare Web Search** under **Web Search & Extract**, or set `web.search_backend` as above. Start a new conversation after installation.
 
 The install command works on Windows, macOS, and Linux. The plugin searches only. Keep your existing `web.extract_backend` for page extraction. Cloudflare requires AI Gateway credits or a provider key stored in AI Gateway. An empty `byok_alias` lets Cloudflare use its default stored key, then gateway credits. A named alias must already exist.
 
@@ -48,7 +51,23 @@ The plugin returns titles, URLs, descriptions, and numbered positions. It accept
 
 Hermes controls caching and fallback behavior. Its keyless rescue may send a failed search to another service. Set `web.keyless_rescue: false` if searches must stay on your chosen backend.
 
-Settings and credentials are read for the active profile on each call. The plugin does not add model tools, modify Hermes code, start background processes, or update itself. It reads only its own configuration and declared token through Hermes APIs, and writes no files itself.
+Settings and credentials are read for the active profile whenever Hermes calls the provider. A Hermes cache hit skips that call. The plugin does not add model tools, modify Hermes code, start background processes, or update itself. It reads only its own configuration and declared token through Hermes APIs, and writes no files itself.
+
+## Search cache limitation
+
+Keep `web.cache_enabled: false` in every profile using this backend. This is the supported configuration while Hermes' search cache omits the active profile and routing settings from its cache key:
+
+```yaml
+web:
+  search_backend: cloudflare-web-search
+  cache_enabled: false
+```
+
+With the default cache enabled, repeating a query after changing `provider`, `gateway_id`, `account_id`, or `byok_alias` can return the previous route's result without calling the new route. The default cache lifetime is 20 minutes. A process serving multiple profiles can also reuse another profile's cached result for the same query and backend.
+
+This limitation is in Hermes' shared search cache. The existing [upstream profile-cache PR](https://github.com/NousResearch/hermes-agent/pull/95036) addresses profile separation, but changes to routing settings within a profile also need an upstream fix. The plugin does not override Hermes' cache or change its registered provider name.
+
+Disabling `web.cache_enabled` disables both Hermes search and extraction result caches for that profile. Repeated requests can therefore increase network traffic and provider charges.
 
 ## Verify
 
@@ -69,7 +88,17 @@ scripts/run_tests.sh /path/to/hermes-cloudflare-web-search/tests/test_provider.p
 hermes plugins validate /path/to/hermes-cloudflare-web-search --install-deps
 ```
 
-The tests install the plugin into temporary profile directories, load it through Hermes discovery, and exercise `web_search` against a local HTTP server. They require no Cloudflare credentials. A live authenticated Cloudflare search remains a separate check.
+The tests install the plugin into temporary profile directories, load it through Hermes discovery, and exercise `web_search` against a local HTTP server. They require no Cloudflare credentials. Adapter and profile-isolation checks use the documented cache-disabled configuration.
+
+Additional regressions exercise the default cache, the real settings writer, and profile switching. The four routing cases and one profile case are strict expected failures while the upstream cache limitation remains. Their cache-disabled controls must pass. An unexpected pass fails the suite so the limitation and expected-failure markers can be reassessed after an upstream fix.
+
+To reproduce the five upstream failures as ordinary test failures, run:
+
+```sh
+scripts/run_tests.sh /path/to/hermes-cloudflare-web-search/tests/test_provider.py -- --runxfail -k cache -c /path/to/hermes-cloudflare-web-search/pytest.ini
+```
+
+A live authenticated Cloudflare search remains a separate check. Passing the local suite does not establish live API access or correctness with the default cache enabled.
 
 ## License
 

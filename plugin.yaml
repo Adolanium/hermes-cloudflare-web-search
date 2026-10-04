@@ -1,5 +1,5 @@
 name: cloudflare-web-search
-version: 1.0.0
+version: 1.0.1
 description: "Search the web through Cloudflare AI Gateway with Ceramic, Exa, or Linkup."
 author: Adolanium
 license: MIT
